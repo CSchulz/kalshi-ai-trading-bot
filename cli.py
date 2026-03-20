@@ -31,8 +31,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     live = getattr(args, "live", False)
     paper = getattr(args, "paper", False)
     beast = getattr(args, "beast", False)
-    disciplined = getattr(args, "disciplined", False)
     safe_compounder = getattr(args, "safe_compounder", False)
+    strategy = getattr(args, "strategy", None)
 
     if live and paper:
         print("Error: --live and --paper are mutually exclusive.")
@@ -44,13 +44,22 @@ def cmd_run(args: argparse.Namespace) -> None:
         print("⚠️  WARNING: LIVE TRADING MODE ENABLED")
         print("   This will use real money and place actual trades.")
 
+    # Resolve legacy flags to a normalized strategy name.
+    if strategy is None:
+        if safe_compounder:
+            strategy = "safe-compounder"
+        elif beast:
+            strategy = "beast"
+        else:
+            strategy = "disciplined"
+
     # --safe-compounder mode: edge-based NO-side only
-    if safe_compounder:
+    if strategy == "safe-compounder":
         _run_safe_compounder(live_mode=live_mode)
         return
 
     # --beast mode: original aggressive settings (NOT default)
-    if beast:
+    if strategy == "beast":
         print("⚠️  BEAST MODE: Aggressive settings enabled.")
         print("   WARNING: Aggressive settings with no guardrails. Use at your own risk.")
         from beast_mode_bot import BeastModeBot
@@ -61,7 +70,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             print("\nTrading bot stopped by user.")
         return
 
-    # DEFAULT: disciplined mode (with or without --disciplined flag)
+    # DEFAULT: disciplined mode (with or without legacy --disciplined flag)
     print("🛡️  DISCIPLINED MODE (default)")
     print("   Category scoring + portfolio enforcement active.")
     print("   Use --beast to run without guardrails (not recommended).")
@@ -114,29 +123,80 @@ def _run_safe_compounder(live_mode: bool = False) -> None:
 
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
-    """Launch the Streamlit monitoring dashboard."""
+    """Launch monitoring dashboards."""
     import subprocess
 
-    # Prefer the dedicated dashboard launch script if it exists.
-    dashboard_script = Path(__file__).parent / "scripts" / "launch_dashboard.py"
-    beast_dashboard = Path(__file__).parent / "scripts" / "beast_mode_dashboard.py"
+    dash_type = getattr(args, "type", "streamlit")
 
-    if dashboard_script.exists():
-        subprocess.run([sys.executable, str(dashboard_script)], check=False)
-    elif beast_dashboard.exists():
-        # Fall back to running the dashboard module directly.
-        from src.utils.logging_setup import setup_logging
-        from beast_mode_bot import BeastModeBot
+    if dash_type == "streamlit":
+        # Prefer the dedicated dashboard launch script if it exists.
+        dashboard_script = Path(__file__).parent / "scripts" / "launch_dashboard.py"
+        if dashboard_script.exists():
+            subprocess.run([sys.executable, str(dashboard_script)], check=False)
+        else:
+            print("Error: Streamlit launcher not found (scripts/launch_dashboard.py).")
+            sys.exit(1)
+        return
 
-        setup_logging(log_level="INFO")
-        bot = BeastModeBot(live_mode=False, dashboard_mode=True)
-        try:
-            asyncio.run(bot.run())
-        except KeyboardInterrupt:
-            print("\nDashboard stopped by user.")
-    else:
-        print("Error: No dashboard script found.")
+    from beast_mode_dashboard import BeastModeDashboard
+
+    async def _run_beast_dashboard() -> None:
+        dashboard = BeastModeDashboard()
+        await dashboard.unified_system.async_initialize()
+        if getattr(args, "summary", False):
+            await dashboard.show_summary()
+        elif getattr(args, "export", False):
+            await dashboard.export_performance_csv(getattr(args, "filename", None))
+        else:
+            await dashboard.show_live_dashboard()
+
+    try:
+        asyncio.run(_run_beast_dashboard())
+    except KeyboardInterrupt:
+        print("\nDashboard stopped by user.")
+    except Exception as exc:
+        print(f"Error running dashboard: {exc}")
         sys.exit(1)
+
+
+def cmd_paper(args: argparse.Namespace) -> None:
+    """Run paper-trading workflows from the unified CLI."""
+    from src.paper.dashboard import generate_html
+    from paper_trader import (
+        DASHBOARD_OUT,
+        check_settlements,
+        print_stats,
+        scan_and_log,
+    )
+
+    async def _run() -> None:
+        if getattr(args, "stats", False):
+            print_stats()
+            return
+
+        if getattr(args, "dashboard", False):
+            generate_html(DASHBOARD_OUT)
+            print(f"✅ Dashboard generated: {DASHBOARD_OUT}")
+            return
+
+        if getattr(args, "settle", False):
+            await check_settlements()
+            generate_html(DASHBOARD_OUT)
+            print(f"✅ Dashboard updated: {DASHBOARD_OUT}")
+            return
+
+        while True:
+            await scan_and_log()
+            await check_settlements()
+            generate_html(DASHBOARD_OUT)
+            if not getattr(args, "loop", False):
+                break
+            await asyncio.sleep(getattr(args, "interval", 900))
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        print("\nPaper trader stopped by user.")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -462,6 +522,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  python cli.py run --disciplined --live Explicit disciplined live trading\n"
             "  python cli.py run --safe-compounder    NO-side edge-based strategy\n"
             "  python cli.py run --beast              Beast mode (aggressive, not recommended)\n"
+            "  python cli.py paper --loop             Continuous paper signal scanning\n"
+            "  python cli.py dashboard --type beast   Terminal beast dashboard\n"
             "  python cli.py scores                   Show category scores\n"
             "  python cli.py history                  Show trade history + category breakdown\n"
             "  python cli.py status                   Check portfolio balance and positions\n"
@@ -491,24 +553,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run in paper-trading mode (no real orders)",
     )
-    strategy_group = p_run.add_mutually_exclusive_group()
-    strategy_group.add_argument(
-        "--disciplined",
-        action="store_true",
-        default=True,
-        help="Disciplined mode: category scoring + portfolio enforcement (DEFAULT)",
+    p_run.add_argument(
+        "--strategy",
+        type=str,
+        choices=["disciplined", "beast", "safe-compounder"],
+        default="disciplined",
+        help="Trading strategy mode (default: disciplined)",
     )
-    strategy_group.add_argument(
-        "--beast",
-        action="store_true",
-        help="Beast mode: aggressive settings, no guardrails (not recommended)",
-    )
-    strategy_group.add_argument(
-        "--safe-compounder",
-        action="store_true",
-        dest="safe_compounder",
-        help="Safe Compounder: NO-side only, edge-based, near-certain outcomes",
-    )
+    # Legacy compatibility flags (kept hidden to encourage --strategy).
+    p_run.add_argument("--disciplined", action="store_true", default=False, help=argparse.SUPPRESS)
+    p_run.add_argument("--beast", action="store_true", help=argparse.SUPPRESS)
+    p_run.add_argument("--safe-compounder", action="store_true", dest="safe_compounder", help=argparse.SUPPRESS)
     p_run.add_argument(
         "--log-level",
         type=str,
@@ -543,10 +598,32 @@ def build_parser() -> argparse.ArgumentParser:
     # --- dashboard ---
     p_dash = subparsers.add_parser(
         "dashboard",
-        help="Launch the Streamlit monitoring dashboard",
-        description="Open a real-time web dashboard showing portfolio performance, positions, risk metrics, and AI decision logs.",
+        help="Launch monitoring dashboards",
+        description="Open the Streamlit web dashboard or the terminal Beast dashboard.",
     )
+    p_dash.add_argument(
+        "--type",
+        choices=["streamlit", "beast"],
+        default="streamlit",
+        help="Dashboard type (default: streamlit)",
+    )
+    p_dash.add_argument("--summary", action="store_true", help="Beast dashboard: show summary and exit")
+    p_dash.add_argument("--export", action="store_true", help="Beast dashboard: export CSV and exit")
+    p_dash.add_argument("--filename", type=str, help="Beast dashboard: CSV filename for --export")
     p_dash.set_defaults(func=cmd_dashboard)
+
+    # --- paper ---
+    p_paper = subparsers.add_parser(
+        "paper",
+        help="Run paper-trading signal workflows",
+        description="Signal-only paper trading utilities: scan, settle, stats, and HTML dashboard generation.",
+    )
+    p_paper.add_argument("--settle", action="store_true", help="Check settled markets and update outcomes")
+    p_paper.add_argument("--dashboard", action="store_true", help="Regenerate HTML dashboard only")
+    p_paper.add_argument("--stats", action="store_true", help="Print paper stats to terminal")
+    p_paper.add_argument("--loop", action="store_true", help="Continuous scanning mode")
+    p_paper.add_argument("--interval", type=int, default=900, help="Loop interval in seconds (default: 900)")
+    p_paper.set_defaults(func=cmd_paper)
 
     # --- status ---
     p_status = subparsers.add_parser(

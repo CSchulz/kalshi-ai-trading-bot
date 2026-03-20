@@ -21,6 +21,7 @@ Usage:
 import asyncio
 import argparse
 import json
+import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from dataclasses import asdict
@@ -449,6 +450,27 @@ async def main():
         print(f"❌ Dashboard error: {e}")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+def _run_legacy_entrypoint() -> None:
+    """Compatibility wrapper: forward direct script usage to the unified CLI."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--summary', action='store_true')
+    parser.add_argument('--export', action='store_true')
+    parser.add_argument('--filename', type=str)
+    args, _unknown = parser.parse_known_args()
 
+    from cli import main as cli_main
+
+    sys.argv = [sys.argv[0], "dashboard", "--type", "beast"]
+    if args.summary:
+        sys.argv.append("--summary")
+    if args.export:
+        sys.argv.append("--export")
+    if args.filename:
+        sys.argv.extend(["--filename", args.filename])
+
+    print("⚠️  Deprecated entrypoint: use `python cli.py dashboard ...` instead.")
+    cli_main()
+
+
+if __name__ == "__main__":
+    _run_legacy_entrypoint()

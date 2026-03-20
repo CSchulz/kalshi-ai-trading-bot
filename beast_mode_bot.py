@@ -24,6 +24,7 @@ import asyncio
 import argparse
 import time
 import signal
+import sys
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -388,11 +389,28 @@ Beast Mode Features:
     await bot.run()
 
 
+def _run_legacy_entrypoint() -> None:
+    """Compatibility wrapper: forward direct script usage to the unified CLI."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--dashboard", action="store_true")
+    parser.add_argument("--log-level", type=str, default="INFO")
+    args, _unknown = parser.parse_known_args()
+
+    from cli import main as cli_main
+
+    if args.dashboard:
+        sys.argv = [sys.argv[0], "dashboard", "--type", "beast"]
+    else:
+        sys.argv = [sys.argv[0], "run", "--strategy", "beast"]
+        if args.live:
+            sys.argv.append("--live")
+        if args.log_level:
+            sys.argv.extend(["--log-level", args.log_level])
+
+    print("⚠️  Deprecated entrypoint: use `python cli.py ...` instead.")
+    cli_main()
+
+
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n👋 Beast Mode Bot stopped by user")
-    except Exception as e:
-        print(f"❌ Beast Mode Bot error: {e}")
-        raise 
+    _run_legacy_entrypoint()

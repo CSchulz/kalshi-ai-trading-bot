@@ -235,5 +235,33 @@ async def main():
         await asyncio.sleep(args.interval)
 
 
+def _run_legacy_entrypoint() -> None:
+    """Compatibility wrapper: forward direct script usage to the unified CLI."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--settle", action="store_true")
+    parser.add_argument("--dashboard", action="store_true")
+    parser.add_argument("--stats", action="store_true")
+    parser.add_argument("--loop", action="store_true")
+    parser.add_argument("--interval", type=int, default=900)
+    args, _unknown = parser.parse_known_args()
+
+    from cli import main as cli_main
+
+    sys.argv = [sys.argv[0], "paper"]
+    if args.settle:
+        sys.argv.append("--settle")
+    if args.dashboard:
+        sys.argv.append("--dashboard")
+    if args.stats:
+        sys.argv.append("--stats")
+    if args.loop:
+        sys.argv.append("--loop")
+    if args.interval != 900:
+        sys.argv.extend(["--interval", str(args.interval)])
+
+    print("⚠️  Deprecated entrypoint: use `python cli.py paper ...` instead.")
+    cli_main()
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    _run_legacy_entrypoint()
